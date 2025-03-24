@@ -14,9 +14,9 @@ class RssFeedManager {
      * @param string|null $temp_dir Directory for temporary files (defaults to system temp dir)
      */
     public function __construct(StorageInterface $storage, string $config_file, string $temp_dir = null) {
-        $this->storage   = $storage;
-        $this->config    = include($config_file);
-        $this->temp_dir  = $temp_dir ?: sys_get_temp_dir();
+        $this->storage  = $storage;
+        $this->config   = include($config_file);
+        $this->temp_dir = $temp_dir ?: sys_get_temp_dir();
     }
 
     /**
@@ -85,12 +85,28 @@ class RssFeedManager {
 
     /**
      * Saves the XML file back to storage.
+     * Merges channel-level metadata from the configuration into the channel element.
      *
      * @param string $feed_id
      * @param \DOMDocument $doc
      * @throws \Exception
      */
     private function save_xml(string $feed_id, \DOMDocument $doc) {
+        // Update channel-level metadata from config (if available)
+        $channel = $doc->getElementsByTagName('channel')->item(0);
+        if (isset($this->config['feeds'][$feed_id]['channel'])) {
+            $channel_config = $this->config['feeds'][$feed_id]['channel'];
+            foreach ($channel_config as $key => $value) {
+                $elements = $channel->getElementsByTagName($key);
+                if ($elements->length > 0) {
+                    $elements->item(0)->nodeValue = htmlspecialchars($value);
+                } else {
+                    $new_node = $doc->createElement($key, htmlspecialchars($value));
+                    $channel->appendChild($new_node);
+                }
+            }
+        }
+        
         $temp_local_file = tempnam($this->temp_dir, 'rss_' . $feed_id . '_');
         try {
             $doc->formatOutput = true;
@@ -111,6 +127,8 @@ class RssFeedManager {
 
     /**
      * Creates a new RSS feed entry.
+     * If the maximum number of entries is reached, deletes the oldest entry (based on pubDate) first.
+     * Automatically sets the pubDate element.
      *
      * @param string $feed_id Feed identifier
      * @param array $entry_data Associative array with entry data (must include at least title and link)
@@ -131,14 +149,45 @@ class RssFeedManager {
         $feed_config = $this->get_feed_config($feed_id);
         $max_entries = $feed_config['max_entries'] ?? 10;
         $items = $channel->getElementsByTagName('item');
+
+        // If maximum number of entries is reached, delete the oldest entry based on pubDate
         if ($items->length >= $max_entries) {
-            throw new \Exception("Maximum number of entries reached for feed: " . $feed_id);
+            $oldest_item = null;
+            $oldest_date = null;
+            foreach ($items as $item) {
+                $pubDateNodes = $item->getElementsByTagName('pubDate');
+                if ($pubDateNodes->length > 0) {
+                    $pubDateStr = $pubDateNodes->item(0)->nodeValue;
+                    $pubDate = strtotime($pubDateStr);
+                } else {
+                    // If pubDate is missing, assume very old
+                    $pubDate = 0;
+                }
+                if ($oldest_date === null || $pubDate < $oldest_date) {
+                    $oldest_date = $pubDate;
+                    $oldest_item = $item;
+                }
+            }
+            if ($oldest_item) {
+                $enclosure_nodes = $oldest_item->getElementsByTagName('enclosure');
+                if ($enclosure_nodes->length > 0) {
+                    $url = $enclosure_nodes->item(0)->getAttribute('url');
+                    $this->storage->delete_file($url);
+                }
+                $channel->removeChild($oldest_item);
+            }
         }
+
+        // Create new entry
         $item = $doc->createElement('item');
         foreach ($entry_data as $key => $value) {
             $node = $doc->createElement($key, htmlspecialchars($value));
             $item->appendChild($node);
         }
+        // Always set pubDate to current date/time (RFC 822 format)
+        $pub_date_node = $doc->createElement('pubDate', date(DATE_RSS));
+        $item->appendChild($pub_date_node);
+        // Ensure a GUID is present
         if ($item->getElementsByTagName('guid')->length === 0) {
             $guid = $doc->createElement('guid', uniqid());
             $item->appendChild($guid);
@@ -188,6 +237,7 @@ class RssFeedManager {
 
     /**
      * Updates an existing entry.
+     * Automatically updates the pubDate to the current date/time.
      *
      * @param string $feed_id
      * @param string $entry_id GUID of the entry to update
@@ -220,6 +270,14 @@ class RssFeedManager {
                         $node = $doc->createElement($key, htmlspecialchars($value));
                         $item->appendChild($node);
                     }
+                }
+                // Update the pubDate to the current date/time
+                $pubDate_nodes = $item->getElementsByTagName('pubDate');
+                if ($pubDate_nodes->length > 0) {
+                    $pubDate_nodes->item(0)->nodeValue = date(DATE_RSS);
+                } else {
+                    $pub_date_node = $doc->createElement('pubDate', date(DATE_RSS));
+                    $item->appendChild($pub_date_node);
                 }
                 if ($image_file_path && file_exists($image_file_path)) {
                     $media_folder = $this->get_feed_media_folder($feed_id);
