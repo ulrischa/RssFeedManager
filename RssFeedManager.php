@@ -62,7 +62,7 @@ class RssFeedManager {
      * @throws \Exception
      */
     private function load_xml(string $feed_id): \DOMDocument {
-        $temp_local_file = tempnam($this->temp_dir, 'rss_');
+        $temp_local_file = tempnam($this->temp_dir, 'rss_' . $feed_id . '_');
         try {
             $remote_path = $this->get_feed_xml_path($feed_id);
             if (!$this->storage->download_file($remote_path, $temp_local_file)) {
@@ -91,7 +91,7 @@ class RssFeedManager {
      * @throws \Exception
      */
     private function save_xml(string $feed_id, \DOMDocument $doc) {
-        $temp_local_file = tempnam($this->temp_dir, 'rss_');
+        $temp_local_file = tempnam($this->temp_dir, 'rss_' . $feed_id . '_');
         try {
             $doc->formatOutput = true;
             $doc->save($temp_local_file);
